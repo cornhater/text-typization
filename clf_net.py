@@ -3,69 +3,58 @@ import os
 from PIL import Image 
 import torch
 import numpy as np
+import torch.utils.data as data
+from torch.utils.data import Dataset
+import torchvision.datasets
 
-# 0 - classic
-# 1 - bold
+root = r'E:\botay\диплом\font_dataset'
+transform = transforms.Compose([
+    transforms.Resize((40, 40)),
+    transforms.ToTensor()])
 
-classic_path = r'E:\botay\диплом\classic'
-bold_path = r'E:\botay\диплом\bold'
+class FontDataset(Dataset):
+    def __init__(self, root, transform=None):
+        self.root = root
+        self.transform = transform
+        self.bold_root = os.path.join(root, os.listdir(root)[0])
+        self.classic_root = os.path.join(root, os.listdir(root)[1])
+        self.items = []
+        for i in range(len(os.listdir(self.classic_root))):
+            self.items.append(os.path.join(self.classic_root, os.listdir(self.classic_root)[i]))
+        for i in range(len(os.listdir(self.bold_root))):
+            self.items.append(os.path.join(self.bold_root, os.listdir(self.bold_root)[i]))
+        self.targets = [0]*len(os.listdir(self.classic_root))+[1]*len(os.listdir(self.bold_root))
+        
+    def __len__(self):
+        return len(self.items)
+        
+    def __getitem__(self, idx):
+        item = Image.open(self.items[idx])
+        if self.transform:
+            item = transform(item)
+        target = self.targets[idx]
+        return item, target
 
-group_len = 20
+dataset = FontDataset(root, transform)
 
-target = [0]*len(os.listdir(classic_path))+[1]*len(os.listdir(bold_path))
-target = torch.LongTensor(target)
-target = torch.split(target, group_len)
+def Splitter(dataset, val_size = 0.2, test_size = 0.2):
+    order = np.random.permutation(len(dataset))
+    val_len = int(val_size*(len(dataset)))
+    test_len = int(test_size*(len(dataset)))
+    val_set = data.Subset(dataset, order[:val_len])
+    test_set = data.Subset(dataset, order[val_len:val_len+test_len])
+    train_set = data.Subset(dataset, order[val_len+test_len:])
+    return train_set, val_set, test_set
 
-def ImgToData(classic_path, bold_path):
-    data = torch.tensor(())
-    transform = transforms.Compose([
-      transforms.Resize((40, 40)),
-      transforms.ToTensor()])
-    classic = os.listdir(classic_path)
-    bold = os.listdir(bold_path)
-    for file in classic:
-        path = os.path.join(classic_path, file)
-        img = Image.open(path)
-        tensor = transform(img)
-        data = torch.cat((data, tensor))
-    for file in bold:
-        path = os.path.join(bold_path, file)
-        img = Image.open(path)
-        tensor = transform(img)
-        data = torch.cat((data, tensor))
-    return data
-    
-data = ImgToData(classic_path, bold_path)
-data = torch.split(data, group_len)
+train_set, val_set, test_set = Splitter(dataset)
 
-import sklearn
-from sklearn import model_selection
+print('Number of train samples: ', len(train_set))
+print('Number of val samples: ', len(val_set))
+print('Number of test samples: ', len(test_set))
 
-data_train, data_test, targets_train, targets_test = sklearn.model_selection.train_test_split(data, target, test_size = 0.2)
-data_val, data_test, targets_val, targets_test = sklearn.model_selection.train_test_split(data_test, targets_test, test_size = 0.5)
-
-def SplitData(groups):
-    groups = torch.stack(groups, 1)
-    groups = groups.reshape(-1, groups.shape[-1], groups.shape[-2])
-    return groups
-
-def SplitTargets(groups):
-    groups = torch.stack(groups, 1)
-    groups = groups.reshape(-1,)
-    return groups
-
-data_train = SplitData(data_train)
-data_val = SplitData(data_val)
-data_test = SplitData(data_test)
-targets_train = SplitTargets(targets_train)
-targets_val = SplitTargets(targets_val)
-targets_test = SplitTargets(targets_test)
-
-data_train = data_train.unsqueeze(1).float()
-data_val = data_val.unsqueeze(1).float()
-data_test = data_test.unsqueeze(1).float()
-
-print(data_train.shape, targets_train.shape, data_val.shape, targets_val.shape, data_test.shape, targets_test.shape)
+train_loader = data.DataLoader(train_set, batch_size=20, shuffle=True)
+val_loader = data.DataLoader(val_set, batch_size=20, shuffle=True)
+test_loader = data.DataLoader(test_set, batch_size=20, shuffle=True)
 
 class MyLeNet(torch.nn.Module):
     def __init__(self):
@@ -128,38 +117,28 @@ my_net = my_net.to(device)
 loss = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(my_net.parameters(), lr=10**-3)
 
-batch_size = 25
+# Дописать цикл для val и test аналогично train
 
-data_test = data_test.to(device)
-targets_test = targets_test.to(device)
-
-for epoch in range(20):
-    order = np.random.permutation(len(data_train))
+for epoch in range(100):
+    optimizer.zero_grad()
+    train_features, train_targets = next(iter(train_loader))
+    train_preds = my_net.forward(train_features.to(device))
+    train_targets = train_targets.to(device)
+    loss_value = loss(train_preds, train_targets)
+    loss_value.backward()
+    optimizer.step()
     
-    for start_index in range(0, len(data_train), batch_size):
-        optimizer.zero_grad()
-        
-        batch_indexes = order[start_index:start_index+batch_size]
-        
-        data_batch = data_train[batch_indexes].to(device)
-        target_batch = targets_train[batch_indexes].to(device)
-        
-        preds = my_net.forward(data_batch) 
-        
-        loss_value = loss(preds, target_batch)
-        loss_value.backward()
-        
-        optimizer.step()
-
-    test_preds = my_net.forward(data_test)
-    
-    accuracy = (test_preds.argmax(dim=1) == targets_test).float().mean()
-    if (epoch%2==0):
+    val_features, val_targets = next(iter(val_loader))
+    val_preds = my_net.forward(val_features.to(device))
+    val_targets = val_targets.to(device)
+    accuracy = (val_preds.argmax(dim=1) == val_targets).float().mean()
+    if (epoch%5==0):
         print('Accuracy = {}'.format(accuracy))
         print('Loss = {}\n'.format(loss_value))
         
 optimizer.zero_grad()
-val_preds = my_net.forward(data_val.to(device))
-targets_val = targets_val.to(device)
-acc = (val_preds.argmax(dim=1) == targets_val).float().mean()
-print('Validation accuracy = {}'.format(acc))
+test_features, test_targets = next(iter(test_loader))
+test_preds = my_net.forward(test_features.to(device))
+test_targets = test_targets.to(device)
+acc = (test_preds.argmax(dim=1) == test_targets).float().mean()
+print('Test accuracy = {}'.format(acc))
